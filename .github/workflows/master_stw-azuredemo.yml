@@ -9,28 +9,50 @@ on:
     - master
   workflow_dispatch:
 
+concurrency:
+  group: deploy-stw-azuredemo
+  cancel-in-progress: true
+
+permissions:
+  id-token: write      # required for OIDC federated login
+  contents: read
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
 
     - name: Set up Node.js version
-      uses: actions/setup-node@v1
+      uses: actions/setup-node@v4
       with:
         node-version: '22.x'
-    
-    - name: npm install, build, and test
+        cache: 'npm'
+
+    - name: Install and build
       run: |
-        npm install
-        npm run build --if-present
-        npm run test --if-present
+        npm ci
+        npm run build
+
+    - name: Prune dev dependencies
+      run: npm prune --omit=dev
+
+    - name: Stage deployment package
+      run: |
+        mkdir -p deploy
+        cp -r dist node_modules server.js package.json deploy/
+
+    - name: Log in to Azure
+      uses: azure/login@v2
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
     - name: 'Deploy to Azure Web App'
-      uses: azure/webapps-deploy@v2
-      with: 
+      uses: azure/webapps-deploy@v3
+      with:
         app-name: 'stw-azuredemo'
         slot-name: 'production'
-        publish-profile: ${{ secrets.AzureAppService_PublishProfile_6a8f94e63cef404d9a756f666bdb2d4b }}
-        package: .
+        package: deploy
