@@ -1,0 +1,54 @@
+# AzureServicesDemo - rebuild from repo
+# Auth is OIDC. Do NOT use publish profiles: SCM basic auth is disabled.
+# Prereqs that survive teardown (verify, do not recreate):
+#   - Entra app reg gh-actions-stw-azuredemo + federated credential
+#   - GitHub REPOSITORY secrets (not Environment secrets):
+#       AZURE_CLIENT_ID        0686e6a9-bda9-4116-9202-cb0623a571c7
+#       AZURE_TENANT_ID        38d191bf-b7e8-47a7-9a02-e22147f65181
+#       AZURE_SUBSCRIPTION_ID  07c32350-e22c-49ed-a2ff-d53694e417ad
+
+az login
+export AZ_RESOURCE_GROUP='stw-azuredemo-rg'
+export AZ_LOCATION='eastus'
+export AZ_PLAN_NAME='stwazuredemoplan'
+export AZ_APP_NAME='stw-azuredemo'
+export AZ_SUB='07c32350-e22c-49ed-a2ff-d53694e417ad'
+export AZ_CLIENT_ID='0686e6a9-bda9-4116-9202-cb0623a571c7'
+export GITHUB_REPO='bberry6/AzureServicesDemo'
+export GITHUB_BRANCH='master'
+
+az account set --subscription $AZ_SUB
+
+# --- confirm the hostname was released after teardown (expect nameAvailable: true)
+az rest --method post --url "https://management.azure.com/subscriptions/$AZ_SUB/providers/Microsoft.Web/checknameavailability?api-version=2023-12-01" --body "{\"name\":\"$AZ_APP_NAME\",\"type\":\"Microsoft.Web/sites\"}"
+
+# --- provision
+az group create --name $AZ_RESOURCE_GROUP --location $AZ_LOCATION
+az appservice plan create --name $AZ_PLAN_NAME --resource-group $AZ_RESOURCE_GROUP --location $AZ_LOCATION --sku B1 --is-linux
+az webapp create --name $AZ_APP_NAME --resource-group $AZ_RESOURCE_GROUP --plan $AZ_PLAN_NAME --runtime "NODE:22-lts"
+az webapp config set --name $AZ_APP_NAME --resource-group $AZ_RESOURCE_GROUP --startup-file "npm start" --always-on true
+az webapp config appsettings set --name $AZ_APP_NAME --resource-group $AZ_RESOURCE_GROUP --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false WEBSITE_NODE_DEFAULT_VERSION=~22 NODE_ENV=production
+az webapp update --name $AZ_APP_NAME --resource-group $AZ_RESOURCE_GROUP --https-only true
+az webapp log config --name $AZ_APP_NAME --resource-group $AZ_RESOURCE_GROUP --application-logging filesystem --docker-container-logging filesystem --level information
+
+# --- REQUIRED: regrant the GitHub identity access to the new app.
+# The app registration survives teardown but its role assignment does not.
+# On MissingSubscription/AuthorizationFailed: wait ~30s, rerun.
+az role assignment create --assignee $AZ_CLIENT_ID --role "Website Contributor" --scope "/subscriptions/$AZ_SUB/resourceGroups/$AZ_RESOURCE_GROUP/providers/Microsoft.Web/sites/$AZ_APP_NAME"
+az role assignment list --assignee $AZ_CLIENT_ID --all --query "[].{role:roleDefinitionName,scope:scope}" -o table
+
+# --- trigger a deploy (a rebuild changes no code, so nothing fires on its own)
+gh workflow run "master_stw-azuredemo.yml" --ref master
+# or: git commit --allow-empty -m "Trigger deploy after rebuild" && git push origin master
+
+# --- verify
+gh run watch
+az webapp show --name $AZ_APP_NAME --resource-group $AZ_RESOURCE_GROUP --query defaultHostName -o tsv
+curl -I https://$AZ_APP_NAME.azurewebsites.net
+az webapp log tail --name $AZ_APP_NAME --resource-group $AZ_RESOURCE_GROUP
+# empty list here = the workflow never reached Azure; check the Actions run, not Azure
+az rest --method get --url "https://management.azure.com/subscriptions/$AZ_SUB/resourceGroups/$AZ_RESOURCE_GROUP/providers/Microsoft.Web/sites/$AZ_APP_NAME/deployments?api-version=2023-12-01" --query "value[].{id:name,status:properties.status,active:properties.active}" -o table
+
+# --- teardown. Does NOT delete the Entra app registration, by design.
+az group delete --name $AZ_RESOURCE_GROUP --yes --no-wait
+az group exists --name $AZ_RESOURCE_GROUP
