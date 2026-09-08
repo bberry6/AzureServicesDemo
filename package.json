@@ -11,7 +11,6 @@
   },
   "dependencies": {
     "apexcharts": "^5.16.0",
-    "express": "^5.2.1",
     "vue": "^3.5.39",
     "vue3-apexcharts": "^1.11.1"
   },

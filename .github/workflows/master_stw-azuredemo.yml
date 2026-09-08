@@ -35,13 +35,14 @@ jobs:
         npm ci
         npm run build
 
-    - name: Prune dev dependencies
-      run: npm prune --omit=dev
-
+    # server.js uses only Node built-ins, so nothing from node_modules ships.
+    # This also avoids App Service tarring node_modules into
+    # node_modules.tar.gz, which a custom startup command never extracts.
     - name: Stage deployment package
       run: |
         mkdir -p deploy
-        cp -r dist node_modules server.js package.json deploy/
+        cp -r dist server.js package.json deploy/
+        du -sh deploy
 
     - name: Log in to Azure
       uses: azure/login@v2
