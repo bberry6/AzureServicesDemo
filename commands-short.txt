@@ -1,11 +1,19 @@
 # AzureServicesDemo - rebuild from repo
 # Auth is OIDC. Do NOT use publish profiles: SCM basic auth is disabled.
+#
 # Prereqs that survive teardown (verify, do not recreate):
-#   - Entra app reg gh-actions-stw-azuredemo + federated credential
+#   - Entra app reg gh-actions-stw-azuredemo + 2 federated credentials.
+#     The one that matters uses GitHub's IMMUTABLE subject form:
+#       repo:bberry6@7839451/AzureServicesDemo@1302016917:ref:refs/heads/master
+#     The classic repo:owner/name:ref:... form alone fails with AADSTS700213.
 #   - GitHub REPOSITORY secrets (not Environment secrets):
 #       AZURE_CLIENT_ID        0686e6a9-bda9-4116-9202-cb0623a571c7
 #       AZURE_TENANT_ID        38d191bf-b7e8-47a7-9a02-e22147f65181
 #       AZURE_SUBSCRIPTION_ID  07c32350-e22c-49ed-a2ff-d53694e417ad
+#
+# server.js has NO runtime dependencies and node_modules is never deployed:
+# App Service tars a deployed node_modules into node_modules.tar.gz that a
+# custom startup command never extracts.
 
 az login
 export AZ_RESOURCE_GROUP='stw-azuredemo-rg'

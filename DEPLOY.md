@@ -19,7 +19,8 @@ repo, using OIDC federated identity for deployment.
 
 ## What changed from the first version of these instructions
 
-Seven corrections, all learned the hard way:
+Nine corrections, all learned the hard way. Corrections 1, 8 and 9 each broke
+the deploy on their own.
 
 1. **Publish-profile auth does not work here.** SCM basic auth is disabled on
    App Service by default now. Publish-profile deployment depends on it, so
@@ -38,6 +39,17 @@ Seven corrections, all learned the hard way:
    does not touch it. Keeping it means the GitHub secrets stay valid.
 7. **A deploy trigger step is needed.** A rebuild involves no code change, so
    nothing pushes automatically. Use an empty commit or `workflow_dispatch`.
+8. **GitHub sends an immutable OIDC subject.** This repo has immutable subject
+   claims enabled, so the token's subject is
+   `repo:bberry6@7839451/AzureServicesDemo@1302016917:ref:refs/heads/master`,
+   not the classic `repo:owner/name:ref:...`. A federated credential built on
+   the classic form is rejected with `AADSTS700213`.
+9. **Do not deploy `node_modules`.** App Service compresses a deployed
+   `node_modules` into `node_modules.tar.gz` and records it in
+   `oryx-manifest.toml`, but only its own Oryx startup path extracts that
+   archive — a custom startup command bypasses it, so requires fail at
+   runtime even though the deployment reports success. `server.js` was
+   rewritten on Node built-ins so there is nothing to ship.
 
 ---
 
@@ -54,7 +66,8 @@ git ls-files | grep -E "server.js|package.json|workflows"
 Expect `server.js`, `package.json`, and
 `.github/workflows/master_stw-azuredemo.yml`. `server.js` is required because
 Node 22 App Service images no longer ship `pm2`, and `dist/` is gitignored so
-the runner builds it.
+the runner builds it. `server.js` uses only Node built-ins — the app has no
+runtime dependencies, and `node_modules` is deliberately never deployed.
 
 **In Entra ID** — app registration `gh-actions-stw-azuredemo`:
 
@@ -63,8 +76,27 @@ az ad app show --id 0686e6a9-bda9-4116-9202-cb0623a571c7 --query displayName -o 
 az ad app federated-credential list --id 0686e6a9-bda9-4116-9202-cb0623a571c7 --query "[].subject" -o tsv
 ```
 
-The subject must read exactly
-`repo:bberry6/AzureServicesDemo:ref:refs/heads/master`.
+Two subjects should come back:
+
+```
+repo:bberry6@7839451/AzureServicesDemo@1302016917:ref:refs/heads/master
+repo:bberry6/AzureServicesDemo:ref:refs/heads/master
+```
+
+The first is the one that actually matters. This repo has GitHub's
+**immutable subject claims** enabled, so the OIDC token embeds the numeric
+owner ID (`7839451`) and repo ID (`1302016917`) rather than using the
+classic `repo:owner/name:ref:...` form. A credential holding only the classic
+form fails with `AADSTS700213`. The second is kept as a fallback in case
+immutable claims are ever turned off.
+
+If you ever recreate the app registration, read the numeric IDs from the API
+rather than guessing them:
+
+```bash
+curl -s https://api.github.com/repos/bberry6/AzureServicesDemo \
+  | jq -r '"repo:\(.owner.login)@\(.owner.id)/\(.name)@\(.id):ref:refs/heads/master"'
+```
 
 **In GitHub** — Settings → Secrets and variables → Actions:
 
@@ -201,8 +233,8 @@ az webapp config appsettings set \
              NODE_ENV=production
 ```
 
-Oryx build stays off — the workflow already produces `dist/` and pruned
-`node_modules`.
+Oryx build stays off — the workflow already produces `dist/`, and the app
+has no runtime dependencies to install.
 
 ### Step 8 — Force HTTPS
 
@@ -292,8 +324,11 @@ az rest --method get \
 | `Publish profile is invalid for app-name and slot-name` | You are on the publish-profile path. SCM basic auth is disabled; switch to OIDC. The message appears for any auth failure, not just a name mismatch. |
 | 503, deployment list empty | Nothing ever deployed; `wwwroot` is empty and `npm start` cannot find `package.json`. Look at the Actions run, not at Azure. |
 | 503, deployment succeeded | Container is starting, or `npm start` is crashing. `az webapp log tail`. |
+| Need to see inside `wwwroot` | `TOKEN=$(az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv)` then `curl -H "Authorization: Bearer $TOKEN" https://stw-azuredemo.scm.azurewebsites.net/api/vfs/site/wwwroot/` — works with SCM basic auth disabled. |
 | 403 `state: QuotaExceeded` | F1 daily CPU quota exhausted, usually by a crash loop. Move to B1: `az appservice plan update --sku B1`. |
-| Deep links 404 | SPA fallback in `server.js` not reached; check the `express.static` path resolves to `dist`. |
+| Deep links 404 | SPA fallback in `server.js` not reached; check the `dist` path resolves. |
+| `AADSTS700213` on login | The federated credential subject does not match GitHub's immutable form. Compare it against the `subject claim` line printed in the Action log. |
+| 503, deployment succeeded, `MODULE_NOT_FOUND` | `node_modules` was deployed and left as `node_modules.tar.gz`. Do not ship it; the app needs no runtime dependencies. |
 | Role assignment `MissingSubscription` | Directory propagation after creating the SP. Wait and retry. |
 
 ---
